@@ -171,6 +171,26 @@ class CollectorTests(unittest.TestCase):
             self.assertFalse(work.exists())
         self.assertNotEqual(captured[0][1],captured[1][1])
 
+    def test_unexpected_login_failure_reports_stage_without_secret_exception_text(self):
+        async def login(*args):raise ValueError('private-password-and-auth-code')
+        self.collector.login_runner=login
+        self.collector.start(self.first,'u','p')
+        result=self.wait_state(self.first,{'failed'})
+        self.assertIn('COOP_BROWSER_LOGIN_FORMAT',result['login']['message'])
+        self.assertNotIn('private-password',result['login']['message'])
+        self.assertFalse(result['connected'])
+
+    def test_vault_write_failure_reports_storage_and_preserves_account_binding(self):
+        async def login(*args):return tokens('one')
+        self.collector.login_runner=login
+        with patch('service.vault.save',side_effect=PermissionError('private-token-in-exception')):
+            self.collector.start(self.first,'u','p')
+            result=self.wait_state(self.first,{'failed'})
+        self.assertIn('COOP_SESSION_STORAGE_IO',result['login']['message'])
+        self.assertNotIn('private-token',result['login']['message'])
+        self.assertIsNone(result['account_fingerprint'])
+        self.assertFalse(result['connected'])
+
     def test_credentials_and_code_validation_rate_limit_and_untrusted_page(self):
         with self.assertRaises(service.ServiceError):self.collector.start(self.first,'','p')
         with self.assertRaises(service.ServiceError):self.collector.sms(self.first,'anything','bad')

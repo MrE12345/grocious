@@ -95,3 +95,9 @@ Automated tests exercise all three login flows in real Chromium against
 simulated supplier pages, invalid OAuth state, cross-user/provider SMS and vault
 isolation, cancellation, refresh checkpoints and archive ownership. Real provider
 credentials and SMS are still needed for final live verification.
+
+Coop SMS pages may submit automatically when the code is filled. The login flow
+accepts an already validated callback if that removes the code field before an
+Enter press. Visible error containers must contain text to reject login. Failures
+include a fixed stage code (for example `COOP_SMS_SUBMIT_TIMEOUT` or
+`COOP_SESSION_STORAGE_IO`); exception messages, URLs and credentials are not logged.

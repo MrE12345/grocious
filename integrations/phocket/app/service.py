@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import queue
 import re
@@ -122,11 +123,14 @@ class Collector:
                 try:return self.codes[attempt].get(timeout=1)
                 except queue.Empty:pass
             return None
+        phase='browser_login'
         try:
             tokens=asyncio.run(self.login_runner(username,password,receive,lambda s,m:self.progress(attempt,s,m),cancelled))
             username=password=None
             if cancelled(): return
+            phase='account_identity'
             fingerprint=vault.account(tokens,self.provider)
+            phase='account_binding'
             with self.guard, self.db() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 if self._attempt(profile,attempt)['state'] not in ACTIVE:return
@@ -141,11 +145,20 @@ class Collector:
                 if conn.execute('SELECT 1 FROM profiles WHERE account=? AND id<>?',(fingerprint,profile)).fetchone():
                     raise ServiceError(self.label+'-kontoen er allerede koblet til en annen bruker.')
                 conn.execute('UPDATE profiles SET account=?,bound_hash=?,enabled=1,next_sync=0,sync_error=\'\' WHERE id=?',(fingerprint,bound_hash,profile))
+                phase='session_storage'
                 vault.save(self.folder(profile)/'vault.enc',profile,{'tokens':tokens,'device':current['device'],'provider':self.provider},fingerprint)
                 conn.execute("UPDATE attempts SET state='connected',message=? WHERE id=?",(self.label+' er tilkoblet. Første kvitteringshenting starter nå.',attempt))
+            phase='collection_schedule'
             self.schedule_sync(profile)
         except Exception as exc:
-            message=exc.message if isinstance(exc,ServiceError) else str(exc) if isinstance(exc,coop_login.LoginError) else self.label+'-innloggingen feilet. Prøv igjen; tidligere kvitteringer er bevart.'
+            if isinstance(exc,ServiceError): message=exc.message
+            elif isinstance(exc,coop_login.LoginError): message=str(exc)
+            else:
+                kind = 'IO' if isinstance(exc,OSError) else 'DATABASE' if isinstance(exc,sqlite3.Error) else 'FORMAT' if isinstance(exc,(ValueError,KeyError,IndexError,TypeError)) else 'INTERNAL'
+                diagnostic = self.provider.upper()+'_'+phase.upper()+'_'+kind
+                # Never log exception messages or locals: browser errors may contain credentials.
+                logging.getLogger(__name__).warning('provider_login_failure code=%s',diagnostic)
+                message=self.label+'-innloggingen feilet. Prøv igjen; tidligere kvitteringer er bevart. ['+diagnostic+']'
             self.progress(attempt,'failed',message)
         finally:
             username=password=None

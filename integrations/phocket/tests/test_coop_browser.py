@@ -16,7 +16,11 @@ class CoopBrowserTests(unittest.TestCase):
 
     def test_callback_with_wrong_oauth_state_cannot_exchange_tokens(self):self.flow(False)
 
-    def flow(self, valid_state):
+    def test_sms_page_can_submit_automatically_when_code_is_filled(self):self.flow(True, auto_submit=True)
+
+    def test_empty_error_container_does_not_reject_login(self):self.flow(True, empty_alert=True)
+
+    def flow(self, valid_state, auto_submit=False, empty_alert=False):
         from playwright.async_api import async_playwright as real_factory
         observations={};progress=[]
         class Harness:
@@ -29,6 +33,7 @@ class CoopBrowserTests(unittest.TestCase):
                 original=browser.new_context
                 async def context(**options):
                     result=await original(**options)
+                    result.set_default_timeout(1200)
                     async def route(request_route):
                         url=urlsplit(request_route.request.url)
                         if url.path=='/authorize':
@@ -37,7 +42,10 @@ class CoopBrowserTests(unittest.TestCase):
                         elif url.path=='/u/password':
                             html='<form method="post" action="/u/sms"><input name="password" type="password"><button>Logg inn</button></form>'
                         elif url.path=='/u/sms':
-                            html='<form method="post" action="/u/finish"><input name="code" autocomplete="one-time-code"><button>Bekreft</button></form>'
+                            handler=' oninput="if(this.value.length===6)this.form.submit()"' if auto_submit else ''
+                            html='<form id="sms" method="post" action="/u/finish"><input name="code" autocomplete="one-time-code"'+handler+'><button>Bekreft</button></form>'
+                            if empty_alert:
+                                html='<div role="alert"></div><style>#sms{display:none}</style>'+html+'<script>setTimeout(()=>document.getElementById("sms").style.display="block",900)</script>'
                         elif url.path=='/u/finish':
                             observations['sms']=parse_qs(request_route.request.post_data)['code'][0]
                             destination=coop_login.CALLBACK+'?'+urlencode({'code':'synthetic-oauth-code','state':observations['state'] if valid_state else 'wrong-state'})

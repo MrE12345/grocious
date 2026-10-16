@@ -15,3 +15,6 @@ provider_login.py and provider_session.py for separate Rema/Trumf browser login,
 provider-specific encrypted sessions, receipt backfill and refresh checkpoints.
 The provider archive imports the isolated job's provider_session adapter instead
 of webgui. All three providers share the authenticated HTTP protocol.
+
+2026-10-16: tolerate Coop SMS auto-submit after a validated callback, ignore empty
+error containers, and report credential-free failure stages for troubleshooting.

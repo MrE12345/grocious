@@ -1,5 +1,6 @@
 """Coop API session headers shared by receipts, coupons and benefits."""
 
+import runtime
 import json
 import os
 import uuid
@@ -9,7 +10,7 @@ import receipt_archive as archive
 
 
 def load_headers(data=None):
-    data = Path(data or os.environ.get("GROCERY_DATA", "/data"))
+    data = Path(data) if data is not None else runtime.data_dir()
     session = data / "coop_session.json"
     tokens = data / "coop_tokens.json"
     if not session.exists() and not tokens.exists():

@@ -2,11 +2,12 @@
 """Trumf client — uses the saved NextAuth session cookie to pull bonus balance,
 receipts and campaign offers via the (browser-free) BFF token. Playwright only
 needed for the periodic re-login (login.py), not here."""
-import json, os, sys, datetime, urllib.request, urllib.parse
+import json, os, sys, datetime
 import requests
+import runtime
 
-STATE = os.environ.get("TRUMF_STATE", "/data/trumf_state.json")
-NTFY  = os.environ.get("NTFY_URL")           # e.g. https://ntfy.sh/<topic> (optional)
+STATE = str(runtime.data_dir() / "trumf_state.json") if runtime.multiuser() else os.environ.get("TRUMF_STATE", "/data/trumf_state.json")
+NTFY  = runtime.setting("NTFY_URL")           # e.g. https://ntfy.sh/<topic> (optional)
 API   = "https://platform-rest-prod.ngdata.no"
 
 def load_session():
@@ -43,8 +44,8 @@ def main():
         "kampanjer_tilgjengelig": len(offers) if isinstance(offers, list) else None,
         "hentet": datetime.datetime.now().isoformat(timespec="seconds"),
     }
-    os.makedirs("/data", exist_ok=True)
-    json.dump(out, open("/data/status.json","w"), ensure_ascii=False, indent=2)
+    runtime.data_dir().mkdir(parents=True, exist_ok=True)
+    json.dump(out, open(runtime.data_dir() / "status.json","w"), ensure_ascii=False, indent=2)
     print(json.dumps(out, ensure_ascii=False, indent=2))
     if NTFY:
         msg = f"Trumf: {out['trumf_saldo']} kr bonus · {out['kampanjer_tilgjengelig']} kampanjer · {out['transaksjoner_12mnd']} kjøp (12 mnd)"

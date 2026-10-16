@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Min konto · Grocious{% endblock %}
+{% block content %}<section class="card"><h1>Min konto</h1><p>Logget inn som {{ account.username }}.</p>
+{% if saved %}<p role="status">Innstillingene er lagret.</p>{% endif %}
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<p><label>Telefonnummer for Rema <input name="rema_phone" type="tel" autocomplete="tel" value="{{ rema_phone }}" maxlength="16"></label></p>
+<button class="btn" type="submit">Lagre</button></form>
+<p>Administrator kobler til dagligvarekontoene dine. Kun dine egne kvitteringer vises her.</p></section>{% endblock %}

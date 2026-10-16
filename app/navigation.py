@@ -1,7 +1,6 @@
 """User-configured navigation links, stored outside the source tree."""
+import runtime
 import json
-import os
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from flask import Blueprint, abort, jsonify, request
@@ -12,7 +11,7 @@ bp = Blueprint("navigation", __name__)
 
 
 def path():
-    return Path(os.environ.get("GROCERY_DATA", "/data")) / "navigation.json"
+    return runtime.data_dir() / "navigation.json"
 
 
 def validate(value):

@@ -27,6 +27,53 @@ uses the provider you configure; rules-only interpretation stays local.
 Offers open a detail page with provider text, terms and images when supplied. Rema activation is
 **manual**; Trumf and Coop offers are read-only. Nothing is auto-activated.
 
+
+## Private user accounts (fork development)
+
+The feature/multi-user branch adds administrator-created local accounts, login/logout,
+password hashing, revocable sessions and CSRF protection. Each user has a separate receipt
+archive, inbox, provider sessions, settings, bookkeeping and cache. Request-local storage
+selection also isolates concurrent requests. Multi-user mode requires real private storage;
+it cannot be combined with shared demo fixtures. Legacy single-user mode remains the default.
+
+Run the separate development stack:
+
+~~~bash
+docker compose -f docker-compose.multiuser.yml up -d --build
+docker compose -f docker-compose.multiuser.yml exec web python users.py create alice
+docker compose -f docker-compose.multiuser.yml exec web python users.py create bob
+~~~
+
+Passwords are entered interactively. The development web interface listens on the server's
+127.0.0.1:3014 and starts with empty storage in multiuser-data/. For testing from a workstation,
+forward that port over SSH. Use HTTPS and GROCIOUS_COOKIE_SECURE=1 for a shared deployment.
+The auth database and signing key live under /data/auth; private data lives under
+/data/users/<internal-id>/data. There is no public registration endpoint. Administration:
+
+~~~bash
+docker compose -f docker-compose.multiuser.yml exec web python users.py list
+docker compose -f docker-compose.multiuser.yml exec web python users.py password alice
+docker compose -f docker-compose.multiuser.yml exec web python users.py disable alice
+docker compose -f docker-compose.multiuser.yml exec web python users.py path alice
+docker compose -f docker-compose.multiuser.yml exec web python users.py run alice coop_archive.py --incremental
+~~~
+
+Password resets and disabling an account invalidate its existing sessions. Background jobs
+must select their owner with users.py run; multi-user storage fails closed without an owner.
+The account page stores each user's Rema phone number without falling back to server-wide
+provider credentials.
+
+Provider login still uses the existing terminal scripts in this first version. Mount only
+the chosen user's data directory as /data in the login container, and supply that user's
+private environment file. Trumf also needs that user's runtime directory mounted as /work,
+with data/ and discovery/ subdirectories. Then run the existing Coop, Rema or Trumf login
+script and enter its SMS code in the selected user's data directory. A browser-based provider
+connection flow is a next step.
+
+Existing single-user receipts and credentials are not automatically assigned to an account.
+Keep the current installation separate until an explicit migration to the correct user has
+been reviewed. The development stack does not mount its volume or secrets.
+
 ## How it works
 
 Two runtimes, on purpose:

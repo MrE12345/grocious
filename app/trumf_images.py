@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Archive JPGs produced by Trumf's own download button, without re-rendering locally."""
+import runtime
 import asyncio,datetime as dt,fcntl,json,os,tempfile
 from pathlib import Path
 from urllib.parse import urlencode
@@ -22,7 +23,7 @@ async def main():
         if pending:
             async with async_playwright() as p:
                 browser=await p.chromium.launch(headless=True,args=['--no-sandbox'])
-                ctx=await browser.new_context(storage_state=str(Path(os.environ.get('GROCERY_DATA','/data'))/'trumf_state.json'),accept_downloads=True,locale='nb-NO')
+                ctx=await browser.new_context(storage_state=str(runtime.data_dir()/'trumf_state.json'),accept_downloads=True,locale='nb-NO')
                 # Set necessary-only cookie preference once in this disposable context.
                 page=await ctx.new_page();await page.goto('https://www.trumf.no/profil/kvitteringer',wait_until='domcontentloaded',timeout=60000)
                 consent=page.get_by_role('button',name='Kun nødvendige',exact=True)

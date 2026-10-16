@@ -1,7 +1,7 @@
 """Provider-reported bonus metrics. Do not confuse annual earnings with account balance."""
 
-import datetime as dt, fcntl, json, os, urllib.request, urllib.error
-from pathlib import Path
+import runtime
+import datetime as dt, fcntl, json, urllib.request, urllib.error
 from decimal import Decimal
 import receipt_archive as archive
 from coop_session import load_headers
@@ -48,7 +48,7 @@ def coop_metrics(raw):
 
 
 def coop_data():
-    data = Path(os.environ.get("GROCERY_DATA", "/data"))
+    data = runtime.data_dir()
     path = data / "bonus" / "coop.json"
     old = {}
     try:
@@ -124,7 +124,7 @@ def account_observation(source):
     """Optional user-reported snapshot or explicitly configured receipt roll-forward."""
     if source != "coop":
         return {}
-    path = Path(os.environ.get("GROCERY_DATA", "/data")) / "bonus" / "coop-account-observation.json"
+    path = runtime.data_dir() / "bonus" / "coop-account-observation.json"
     try:
         record = json.loads(path.read_text())
         if record.get("mode") == "opening_plus_receipts":

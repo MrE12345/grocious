@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{% if multiuser %}<meta name="csrf-token" content="{{ csrf_token }}"><script src="/static/auth.js"></script>{% endif %}
 <title>{% block title %}grocious{% endblock %}</title>
 <link rel="stylesheet" href="/themes.css">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -18,13 +19,14 @@ try { var th = localStorage.getItem("grocious.theme"); if (th && th !== "auto") 
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#1d2021">
 </head>
-<body>
+<body{% if account %} data-user-id="{{ account.id }}"{% endif %}>
 <header class="top">
   <a class="brand" href="/" aria-label="grocious"><span class="brand-logo" role="img" aria-label="grocious"></span></a>
 <nav class="quick-links" id="quick-links" aria-label="Dine lenker"{% if not navigation.enabled or not navigation.links %} hidden{% endif %}>
 {% for link in navigation.links %}<a href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.label }}</a>{% endfor %}
 </nav>
   <div class="meta">
+    {% if account %}<a href="/account">{{ account.username }}</a><form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn" type="submit">Logg ut</button></form>{% endif %}
     <a href="/inbox">Innboks{% if inbox_pending_count %} ({{ inbox_pending_count }}){% endif %}</a>
     {% if demo %}<span class="chip demo" title="GROCIOUS_DEMO=1: anonymiserte fixtures, ingen ekte tokens">DEMO</span>{% endif %}
     <details class="settings-menu">

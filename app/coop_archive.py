@@ -2,12 +2,13 @@
 """Archive Coop's available receipt history without changing other providers."""
 import argparse, base64, datetime as dt, fcntl, hashlib, json, os, subprocess, time
 import urllib.request, urllib.parse, urllib.error
-from pathlib import Path
+import runtime
+from werkzeug.local import LocalProxy
 import receipt_archive as archive
 from coop_session import load_headers
 
 API='https://coopay.coop.no/user/pay/history/'
-DATA=Path(os.environ.get('GROCERY_DATA','/data'))
+DATA=LocalProxy(runtime.data_dir)
 
 class Client:
     def __init__(self):

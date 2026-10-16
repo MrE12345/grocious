@@ -22,7 +22,11 @@ class BrowserTests(unittest.TestCase):
         for value in ['123','abcdefghi','../private']:
             with self.assertRaises(LoginError):login.phone_number(value)
 
-    def flow(self, provider, valid_state=True):
+    def test_rema_owner_can_complete_manual_verification_then_receive_sms(self): self.flow('rema', challenge=True)
+
+    def test_rema_sms_can_submit_automatically(self):self.flow('rema',auto_submit=True)
+
+    def flow(self, provider, valid_state=True, challenge=False, auto_submit=False):
         from playwright.async_api import async_playwright as real_factory
         observations={}; states=[]
         class Harness:
@@ -44,9 +48,13 @@ class BrowserTests(unittest.TestCase):
                         elif u.path=='/password':
                             observations['username']=parse_qs(r.request.post_data)['username'][0]
                             html='<form method="post" action="/sms"><input type="password" name="password"><button>Logg inn</button></form>'
-                        elif u.path=='/sms':
-                            observations['first_form']=parse_qs(r.request.post_data)
-                            html='<form method="post" action="/finish"><input name="code" autocomplete="one-time-code"><button>Bekreft</button></form>'
+                        elif u.path=='/recaptcha/api2/bframe':
+                            html='<button style="position:absolute;left:30px;top:30px;width:120px;height:70px" onclick="parent.location.href=\'/verified-sms\'">Testbekreftelse</button>'
+                        elif u.path in {'/sms','/verified-sms'}:
+                            observations['first_form']=parse_qs(r.request.post_data or '')
+                            handler=' oninput="if(this.value.length===6)this.form.submit()"' if auto_submit else ''
+                            html='<form method="post" action="/finish"><input name="code" autocomplete="one-time-code"'+handler+'><button>Bekreft</button></form>'
+                            if challenge and u.path=='/sms':html='<iframe src="/recaptcha/api2/bframe" style="width:360px;height:200px;border:0"></iframe>'
                         elif u.path=='/finish':
                             observations['sms']=parse_qs(r.request.post_data)['code'][0]
                             if provider=='rema':
@@ -81,8 +89,15 @@ class BrowserTests(unittest.TestCase):
         def tracked(url,hosts):
             observations.setdefault('pages',[]).append(url)
             return original_trusted(url,hosts)
+        pending_clicks=[]
+        def progress(state,message):
+            states.append(state)
+            if state=='verification':
+                self.assertTrue(message['image'].startswith(b'\x89PNG'))
+                pending_clicks.append({'x':60,'y':60,'geometry':message['geometry']})
+            if state=='verification_poll' and pending_clicks:return pending_clicks.pop(0)
         with patch('playwright.async_api.async_playwright',Harness),patch.object(login,'trusted',side_effect=tracked):
-            coroutine=getattr(login,provider)('91234567','synthetic-password',lambda deadline:'123456',lambda s,m:states.append(s),lambda:False)
+            coroutine=getattr(login,provider)('91234567','synthetic-password',lambda deadline:'123456',progress,lambda:False)
             if not valid_state:
                 with self.assertRaises(LoginError):asyncio.run(coroutine)
                 self.assertNotIn('exchange',observations);return
@@ -94,6 +109,7 @@ class BrowserTests(unittest.TestCase):
         if provider=='rema':
             actual=base64.urlsafe_b64encode(hashlib.sha256(observations['exchange']['code_verifier'].encode()).digest()).rstrip(b'=').decode()
             self.assertEqual(actual,observations['code_challenge']);self.assertEqual(result['_phone'],'91234567')
+            if challenge:self.assertIn('verification',states)
         else:
             self.assertEqual(observations['first_form']['password'],['synthetic-password'])
             self.assertEqual(result['storage_state']['cookies'][0]['value'],'private-cookie')

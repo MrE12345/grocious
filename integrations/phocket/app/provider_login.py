@@ -4,8 +4,9 @@ import base64
 import hashlib
 import re
 import secrets
+import struct
 import time
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urljoin
 from coop_login import LoginError
 
 REMA_CALLBACK = 'https://ae-appen.appspot.com/redirect/redirect.html'
@@ -36,13 +37,53 @@ async def click(page, texts):
     await page.locator('input:visible').last.press('Enter')
 
 
+async def manual_verification(page, progress):
+    """Relay only the visible CAPTCHA frame; the account owner supplies every click."""
+    from playwright.async_api import Error
+    frames=page.locator('iframe[src*="/recaptcha/"][src*="/bframe"]')
+    for index in range(await frames.count()):
+        frame=frames.nth(index)
+        src=urljoin(page.url,await frame.get_attribute('src') or '')
+        if not trusted(src,{'id.rema.no','www.google.com','www.recaptcha.net','recaptcha.google.com'}):continue
+        if not await frame.is_visible():continue
+        try:
+            image=await frame.screenshot(type='png',timeout=2000)
+            box=await frame.bounding_box()
+            if not box or box['width']<50 or box['height']<50:continue
+            width,height=struct.unpack('>II',image[16:24])
+            geometry=tuple(round(box[k],1) for k in ['x','y','width','height'])
+            progress('verification',{'image':image,'width':width,'height':height,'geometry':geometry})
+            action=progress('verification_poll',None)
+            if isinstance(action,dict) and action.get('geometry')==geometry:
+                # Inputs are restricted to the current CAPTCHA frame, never the login page.
+                x,y=action['x']/width*box['width'],action['y']/height*box['height']
+                if 0<=x<box['width'] and 0<=y<box['height']:
+                    await page.mouse.click(box['x']+x,box['y']+y)
+        except Error:
+            pass  # The frame can disappear as the user finishes verification.
+        await page.wait_for_timeout(250)
+        return True
+    return False
+
+
 async def finish_sms(page, receive, progress, cancelled, hosts, complete, label):
+    from playwright.async_api import Error
     deadline = time.monotonic() + 360
     submissions = 0
+    challenge_active = False
     while time.monotonic() < deadline:
         if cancelled(): raise LoginError('Innloggingen er avbrutt.')
-        if await complete(): return
+        if await complete():
+            progress('verification_clear',None)
+            return
         if not trusted(page.url, hosts): raise LoginError('Innloggingen videresendte til en ukjent adresse.')
+        if label=='Rema' and await manual_verification(page,progress):
+            challenge_active=True
+            continue
+        if challenge_active:
+            progress('verification_clear',None)
+            progress('starting','Sikkerhetskontrollen er fullført. Venter på SMS fra '+label+'.')
+            challenge_active=False
         boxes = page.locator('input[autocomplete="one-time-code"]:visible, input[inputmode="numeric"]:visible, input[name*="code" i]:visible, input[name*="otp" i]:visible, input[type="tel"]:visible:not([name="phoneNumber"])')
         if await boxes.count():
             if submissions >= 3: raise LoginError('SMS-koden ble ikke godkjent. Start innloggingen på nytt.')
@@ -52,19 +93,47 @@ async def finish_sms(page, receive, progress, cancelled, hosts, complete, label)
             if cancelled(): raise LoginError('Innloggingen er avbrutt.')
             if not trusted(page.url, hosts): raise LoginError('Innloggingen kunne ikke bekreftes.')
             progress('checking_sms', 'Kontrollerer SMS-koden hos ' + label + '.')
-            count = await boxes.count()
-            if count >= len(code):
-                for index, digit in enumerate(code): await boxes.nth(index).fill(digit)
-            else: await boxes.first.fill(code)
-            code = None
-            await click(page, ['Bekreft', 'Logg inn', 'Fortsett', 'Send', 'Neste', 'Verifiser'])
+            try:
+                count = await boxes.count()
+                if count >= len(code):
+                    for index, digit in enumerate(code): await boxes.nth(index).fill(digit)
+                else: await boxes.first.fill(code)
+                code = None
+                if not await complete():
+                    await click(page, ['Bekreft', 'Logg inn', 'Fortsett', 'Send', 'Neste', 'Verifiser'])
+            except Error:
+                # A successful auto-submit can remove the input before its callback arrives.
+                # Only an authenticated, validated completion may suppress the browser error.
+                for _ in range(30):
+                    if await complete():break
+                    if cancelled():raise LoginError('Innloggingen er avbrutt.')
+                    await asyncio.sleep(0.1)
+                else:raise
+            finally:code = None
             submissions += 1
             await page.wait_for_timeout(1800)
         else:
             errors = page.locator('[role="alert"]:visible, .validation-summary-errors:visible, .field-validation-error:visible')
-            if await errors.count(): raise LoginError(label + ' avviste innloggingen. Kontroller opplysningene.')
+            if any(text.strip() for text in await errors.all_text_contents()):
+                raise LoginError(label + ' avviste innloggingen. Kontroller opplysningene.')
             await page.wait_for_timeout(300)
     raise LoginError('Innloggingen tok for lang tid. Prøv igjen.')
+
+
+async def wait_rema_verification_ready(page, progress):
+    if not await page.locator('#recaptcha-container').count():return
+    from playwright.async_api import Error
+    progress('starting','Laster Rema sin sikkerhetskontroll før mobilnummeret sendes.')
+    try:
+        anchor=page.locator('iframe[src*="/recaptcha/"][src*="/anchor"]').first
+        await anchor.wait_for(state='attached',timeout=20000)
+        handle=await anchor.element_handle()
+        frame=await handle.content_frame() if handle else None
+        if not frame:raise LoginError('Rema sin sikkerhetskontroll kunne ikke lastes. Prøv igjen.')
+        await frame.wait_for_load_state('domcontentloaded',timeout=20000)
+        await page.wait_for_function('()=>window.grecaptcha && typeof window.grecaptcha.getResponse === "function"',timeout=10000)
+    except Error:
+        raise LoginError('Rema sin sikkerhetskontroll kunne ikke lastes. Prøv igjen. [REMA_VERIFICATION_LOAD]') from None
 
 
 async def rema(username, password, receive, progress, cancelled):
@@ -94,9 +163,12 @@ async def rema(username, password, receive, progress, cancelled):
             await page.goto('https://id.rema.no/authorization?' + urlencode(params), wait_until='domcontentloaded', timeout=45000)
             if not trusted(page.url, {'id.rema.no'}): raise LoginError('Rema-innloggingen kunne ikke bekreftes.')
             field = page.locator('input[name="phoneNumber"]:visible, input[type="tel"]:visible').first
-            await field.wait_for(state='visible', timeout=20000); await field.fill(phone)
+            await field.wait_for(state='visible', timeout=20000)
+            await wait_rema_verification_ready(page,progress)
+            await field.fill(phone)
             await click(page, ['Send meg engangskode', 'Send', 'Logg inn', 'Neste'])
-            await page.wait_for_timeout(1000)
+            progress('starting','Mobilnummeret er sendt til Rema. Venter på sikkerhetskontroll eller SMS.')
+            await page.wait_for_timeout(500)
             async def complete():
                 if authorization.get('error'): raise LoginError('Rema svarte med en ugyldig innloggingsbekreftelse.')
                 return bool(authorization.get('code'))

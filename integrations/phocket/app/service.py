@@ -5,6 +5,7 @@ import hmac
 import io
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -38,7 +39,7 @@ class Collector:
         self.label = {"coop":"Coop", "rema":"Rema", "trumf":"Trumf"}[provider]
         self.root=Path(root); self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         self.database=self.root/'profiles.sqlite3'; self.guard=threading.RLock()
-        self.codes={}; self.active_sync=set(); self.executor=ThreadPoolExecutor(max_workers=2)
+        self.codes={}; self.verifications={}; self.active_sync=set(); self.executor=ThreadPoolExecutor(max_workers=2)
         self.sync_executor=ThreadPoolExecutor(max_workers=2)
         self.login_runner=coop_login.authenticate if provider=="coop" else getattr(provider_login,provider)
         with self.db() as conn:
@@ -69,9 +70,14 @@ class Collector:
         with self.db() as conn:
             row=conn.execute('SELECT * FROM profiles WHERE id=?',(profile,)).fetchone()
             attempt=conn.execute('SELECT id,state,message,expires,submissions FROM attempts WHERE profile=? ORDER BY created DESC LIMIT 1',(profile,)).fetchone()
+        login=dict(attempt) if attempt else None
+        if login:
+            with self.guard:
+                challenge=self.verifications.get(login['id']) if login['state'] in ACTIVE and login['expires']>time.time() else None
+                login['verification']={k:challenge[k] for k in ['view_id','width','height']} if challenge else None
         return {'connected':bool(row and row['enabled'] and (self.folder(profile)/'vault.enc').exists()),
                 'account_fingerprint':row['account'] if row else None,
-                'login':dict(attempt) if attempt else None,
+                'login':login,
                 'sync':{'state':row['sync_state'],'message':row['sync_error'],'last_success':row['last_sync']} if row else {'state':'idle','message':'','last_success':None}}
 
     def start(self, profile, username, password):
@@ -111,6 +117,27 @@ class Collector:
         return row
 
     def progress(self, attempt, state, message):
+        if state=='verification_clear':
+            with self.guard:self.verifications.pop(attempt,None)
+            return
+        if state=='verification_poll':
+            with self.guard:
+                value=self.verifications.get(attempt)
+                if value:
+                    try:return value['actions'].get_nowait()
+                    except queue.Empty:pass
+            return None
+        if state=='verification':
+            image=message['image'];width=message['width'];height=message['height']
+            if not isinstance(image,bytes) or not image.startswith(b'\x89PNG\r\n\x1a\n') or len(image)>2*1024*1024 or not (1<=width<=1600 and 1<=height<=1200):
+                raise ServiceError('Sikkerhetskontrollen kunne ikke vises.')
+            with self.guard:
+                value=self.verifications.get(attempt)
+                if not value or value['geometry']!=message['geometry']:
+                    value={'view_id':secrets.token_hex(16),'geometry':message['geometry'],'actions':queue.Queue(maxsize=8),'click_times':[]}
+                    self.verifications[attempt]=value
+                value.update(image=image,width=width,height=height)
+            state='starting';message='Rema krever en sikkerhetskontroll. Fullfør bildebekreftelsen nedenfor for å få SMS-koden.'
         with self.db() as conn:
             conn.execute("UPDATE attempts SET state=?,message=? WHERE id=? AND state IN ('starting','awaiting_sms','checking_sms','finishing')",(state,message,attempt))
 
@@ -162,7 +189,9 @@ class Collector:
             self.progress(attempt,'failed',message)
         finally:
             username=password=None
-            with self.guard:self.codes.pop(attempt,None)
+            with self.guard:
+                self.codes.pop(attempt,None)
+                self.verifications.pop(attempt,None)
 
     def sms(self, profile, attempt, code):
         if not isinstance(code,str) or not re.fullmatch('[0-9]{6}',code): raise ServiceError('SMS-koden må ha seks sifre.',400)
@@ -175,8 +204,34 @@ class Collector:
             except queue.Full:raise ServiceError('En SMS-kode blir allerede kontrollert.')
             conn.execute("UPDATE attempts SET submissions=submissions+1,state='checking_sms',message='Kontrollerer SMS-koden.' WHERE id=?",(attempt,))
 
+    def verification_image(self, profile, attempt):
+        with self.guard:
+            row=self._attempt(profile,attempt)
+            value=self.verifications.get(attempt)
+            if row['state'] not in ACTIVE or row['expires']<time.time() or not value:
+                raise ServiceError('Sikkerhetskontrollen er ikke aktiv. Oppdater status.',409)
+            return value['image']
+
+    def verification_click(self, profile, body):
+        attempt=body.get('attempt')
+        with self.guard:
+            self.verification_image(profile,attempt)
+            value=self.verifications[attempt]
+            if body.get('view_id')!=value['view_id']:raise ServiceError('Bildet ble oppdatert. Prøv igjen.')
+            try:x,y=float(body.get('x')),float(body.get('y'))
+            except (TypeError,ValueError):raise ServiceError('Ugyldig plassering i sikkerhetskontrollen.',400) from None
+            if not (math.isfinite(x) and math.isfinite(y) and 0<=x<value['width'] and 0<=y<value['height']):
+                raise ServiceError('Klikket er utenfor sikkerhetskontrollen.',400)
+            now=time.monotonic();value['click_times']=[t for t in value['click_times'] if t>now-60]
+            if len(value['click_times'])>=90:raise ServiceError('Vent litt før du klikker igjen.',429)
+            try:value['actions'].put_nowait({'x':x,'y':y,'geometry':value['geometry']})
+            except queue.Full:raise ServiceError('Tidligere klikk behandles. Vent litt.',429) from None
+            value['click_times'].append(now)
+
     def cancel(self, profile):
-        with self.db() as conn:
+        with self.guard,self.db() as conn:
+            for row in conn.execute('SELECT id FROM attempts WHERE profile=?',(profile,)):
+                self.verifications.pop(row['id'],None)
             conn.execute("UPDATE attempts SET state='cancelled',message='Innloggingen er avbrutt.' WHERE profile=? AND state IN ('starting','awaiting_sms','checking_sms','finishing')",(profile,))
 
     def logout(self, profile):
@@ -298,6 +353,16 @@ def create_app(collector=None, *, background=False):
     def sms(profile,provider="coop"):
         collector=selected(provider)
         body=request.get_json() or {};collector.sms(profile,body.get('attempt'),body.get('code'));return jsonify(ok=True),202
+    @app.get('/v1/profiles/<profile>/verification/<attempt>')
+    @app.get('/v1/profiles/<profile>/providers/<provider>/verification/<attempt>')
+    def verification_image(profile,attempt,provider="coop"):
+        body=selected(provider).verification_image(profile,attempt)
+        return send_file(io.BytesIO(body),mimetype='image/png')
+    @app.post('/v1/profiles/<profile>/verification')
+    @app.post('/v1/profiles/<profile>/providers/<provider>/verification')
+    def verification_click(profile,provider="coop"):
+        selected(provider).verification_click(profile,request.get_json() or {})
+        return jsonify(ok=True),202
     @app.post('/v1/profiles/<profile>/cancel')
     @app.post('/v1/profiles/<profile>/providers/<provider>/cancel')
     def cancel(profile,provider="coop"):

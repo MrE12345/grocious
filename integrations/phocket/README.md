@@ -101,3 +101,25 @@ accepts an already validated callback if that removes the code field before an
 Enter press. Visible error containers must contain text to reject login. Failures
 include a fixed stage code (for example `COOP_SMS_SUBMIT_TIMEOUT` or
 `COOP_SESSION_STORAGE_IO`); exception messages, URLs and credentials are not logged.
+
+
+## Manual Rema security verification
+
+Rema can show a reCAPTCHA image challenge before it sends an SMS. The collector
+relays only that visible, trusted CAPTCHA iframe as a PNG held in memory. The
+account owner clicks the image in Phocket; no automated solver is used. The
+collector accepts clicks only inside the current frame, from the profile and
+attempt that owns it. Geometry changes invalidate old input, click queues are
+bounded/rate limited, and cancellation/expiry removes the image. Credentials,
+login-page screenshots and verification images are never written to disk.
+
+`GET verification/<attempt>` returns the private PNG; `POST verification` accepts
+`attempt`, `view_id`, `x`, `y` in image pixels. Status includes
+`login.verification` with the current view ID and image size while the existing
+`starting` state remains active. The host must bind both routes to the current
+user and pending provider attempt, enforce CSRF on clicks and disable caching.
+After the owner completes the challenge, the normal SMS flow continues.
+
+The image includes Rema's security control only; it cannot be used to view or
+control the rest of the browser. The runtime includes the Europe/Oslo time zone
+required by Rema and Trumf receipt normalization.

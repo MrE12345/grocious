@@ -18,3 +18,8 @@ of webgui. All three providers share the authenticated HTTP protocol.
 
 2026-10-16: tolerate Coop SMS auto-submit after a validated callback, ignore empty
 error containers, and report credential-free failure stages for troubleshooting.
+
+2026-10-16: added an account-owned, in-memory manual Rema verification relay.
+Only the visible reCAPTCHA frame can be viewed/clicked by its owner; no solver,
+login-page capture, image persistence or new public port is introduced. Added
+runtime time-zone data required by provider receipt normalization.

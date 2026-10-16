@@ -123,3 +123,10 @@ After the owner completes the challenge, the normal SMS flow continues.
 The image includes Rema's security control only; it cannot be used to view or
 control the rest of the browser. The runtime includes the Europe/Oslo time zone
 required by Rema and Trumf receipt normalization.
+
+The collector installs Playwright 1.63.0 and its matching Chromium instead of
+inheriting the old browser from the login image. Verification remains controlled
+by the account owner. Repeated verification responses without completion stop
+with REMA_VERIFICATION_LOOP; SMS rejection/rate limits and network failures use
+separate fixed codes. Challenge responses and network request bodies are never
+logged or stored. A browser update does not guarantee provider approval.

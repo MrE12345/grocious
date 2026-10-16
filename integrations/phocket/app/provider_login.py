@@ -37,6 +37,41 @@ async def click(page, texts):
     await page.locator('input:visible').last.press('Enter')
 
 
+class RemaVerification:
+    """Keep only safe counters/status codes, never challenge answers or request bodies."""
+    def __init__(self):
+        self.checks=0;self.last_check=0;self.network_errors=0;self.sms_status=None
+
+    def response(self, response):
+        url=urlsplit(response.url)
+        if trusted(response.url,{'id.rema.no','www.google.com','www.recaptcha.net','recaptcha.google.com'}):
+            if '/recaptcha/' in url.path:
+                if url.path.endswith('/userverify'):
+                    self.checks+=1
+                    if self.checks==5:self.last_check=time.monotonic()
+                if response.status>=400:self.network_errors+=1
+        if trusted(response.url,{'id.rema.no','identitytoolkit.googleapis.com'}) and 'sendverificationcode' in url.path.lower():
+            self.sms_status=response.status
+
+    def request_failed(self, request):
+        if trusted(request.url,{'id.rema.no','www.google.com','www.recaptcha.net','recaptcha.google.com'}) and '/recaptcha/' in urlsplit(request.url).path:
+            if request.failure in {'net::ERR_NAME_NOT_RESOLVED','net::ERR_CONNECTION_TIMED_OUT','net::ERR_CONNECTION_REFUSED','net::ERR_INTERNET_DISCONNECTED','net::ERR_NETWORK_CHANGED'}:
+                self.network_errors+=1
+
+    def check(self):
+        if self.sms_status==429:
+            raise LoginError('Rema har begrenset antall SMS-forsøk. Vent før du prøver igjen. [REMA_SMS_RATE_LIMIT]')
+        if self.sms_status is not None and self.sms_status>=400:
+            raise LoginError('Rema avviste forespørselen om SMS-kode. Prøv igjen senere. [REMA_SMS_REJECTED]')
+
+    def check_loop(self):
+        self.check()
+        if self.network_errors>=3:
+            raise LoginError('Sikkerhetskontrollen får nettverksfeil. Prøv igjen senere. [REMA_VERIFICATION_NETWORK]')
+        if self.checks>=5 and time.monotonic()-self.last_check>=3:
+            raise LoginError('Rema gjentar sikkerhetskontrollen uten å godkjenne innloggingen. Stopp og prøv igjen senere. [REMA_VERIFICATION_LOOP]')
+
+
 async def manual_verification(page, progress):
     """Relay only the visible CAPTCHA frame; the account owner supplies every click."""
     from playwright.async_api import Error
@@ -66,7 +101,7 @@ async def manual_verification(page, progress):
     return False
 
 
-async def finish_sms(page, receive, progress, cancelled, hosts, complete, label):
+async def finish_sms(page, receive, progress, cancelled, hosts, complete, label, verification=None):
     from playwright.async_api import Error
     deadline = time.monotonic() + 360
     submissions = 0
@@ -77,7 +112,9 @@ async def finish_sms(page, receive, progress, cancelled, hosts, complete, label)
             progress('verification_clear',None)
             return
         if not trusted(page.url, hosts): raise LoginError('Innloggingen videresendte til en ukjent adresse.')
+        if verification:verification.check()
         if label=='Rema' and await manual_verification(page,progress):
+            if verification:verification.check_loop()
             challenge_active=True
             continue
         if challenge_active:
@@ -160,6 +197,9 @@ async def rema(username, password, receive, progress, cancelled):
             await context.route(REMA_CALLBACK + '*', callback)
             page = await context.new_page()
             page.on('request', capture)
+            verification=RemaVerification()
+            page.on('response',verification.response)
+            page.on('requestfailed',verification.request_failed)
             await page.goto('https://id.rema.no/authorization?' + urlencode(params), wait_until='domcontentloaded', timeout=45000)
             if not trusted(page.url, {'id.rema.no'}): raise LoginError('Rema-innloggingen kunne ikke bekreftes.')
             field = page.locator('input[name="phoneNumber"]:visible, input[type="tel"]:visible').first
@@ -172,7 +212,7 @@ async def rema(username, password, receive, progress, cancelled):
             async def complete():
                 if authorization.get('error'): raise LoginError('Rema svarte med en ugyldig innloggingsbekreftelse.')
                 return bool(authorization.get('code'))
-            await finish_sms(page, receive, progress, cancelled, {'id.rema.no', 'ae-appen.appspot.com'}, complete, 'Rema')
+            await finish_sms(page, receive, progress, cancelled, {'id.rema.no', 'ae-appen.appspot.com'}, complete, 'Rema', verification)
             progress('finishing', 'Fullfører tilkoblingen til Rema.')
             response = await context.request.post('https://id.rema.no/token', form=dict(grant_type='authorization_code',
                 client_id='android-251010', code=authorization['code'], redirect_uri=REMA_CALLBACK, code_verifier=verifier))

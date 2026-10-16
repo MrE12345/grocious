@@ -4,6 +4,7 @@ import argparse, base64, datetime as dt, fcntl, hashlib, json, os, subprocess, t
 import urllib.request, urllib.parse, urllib.error
 from pathlib import Path
 import receipt_archive as archive
+from coop_session import load_headers
 
 API='https://coopay.coop.no/user/pay/history/'
 DATA=Path(os.environ.get('GROCERY_DATA','/data'))
@@ -11,8 +12,7 @@ DATA=Path(os.environ.get('GROCERY_DATA','/data'))
 class Client:
     def __init__(self):
         self.session=DATA/'coop_session.json';self.tokens=DATA/'coop_tokens.json'
-        self.headers=json.loads(self.session.read_text())['headers']
-        self.headers={k:v for k,v in self.headers.items() if k.lower() not in ('host','accept-encoding','content-length')}
+        self.headers=load_headers(DATA)
         self.refresh()
     def refresh(self):
         old=json.loads(self.tokens.read_text())

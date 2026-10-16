@@ -4,6 +4,7 @@ import datetime as dt, fcntl, json, os, urllib.request, urllib.error
 from pathlib import Path
 from decimal import Decimal
 import receipt_archive as archive
+from coop_session import load_headers
 
 
 def coop_metrics(raw):
@@ -54,7 +55,7 @@ def coop_data():
         old = json.loads(path.read_text())
     except (OSError, ValueError):
         pass
-    if not (data / "coop_session.json").exists():
+    if not (data / "coop_session.json").exists() and not (data / "coop_tokens.json").exists():
         return {"bonus_error": "Coop session unavailable"}
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(data / "receipts" / "coop" / "sync.lock", "a") as lock:
@@ -63,7 +64,7 @@ def coop_data():
         except BlockingIOError:
             return {**old.get("metrics", {}), "bonus_stale": True}
         try:
-            headers = json.loads((data / "coop_session.json").read_text())["headers"]
+            headers = load_headers(data)
             url = "https://cdcapp.coop.no/user/benefits/overview"
             for attempt in range(2):
                 try:

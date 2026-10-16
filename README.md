@@ -230,3 +230,7 @@ services, must stay open under the AGPL. No taking this private to monetise groc
 
 The wordmark uses locally hosted [Space Grotesk](https://github.com/floriankarsten/space-grotesk),
 licensed under the SIL Open Font License (included in `app/static/fonts/`).
+
+### Phocket browser connections
+
+The optional [Phocket collector](integrations/phocket/README.md) lets an authenticated host application connect each user to their own Trumf, Rema and Coop accounts through browser forms and SMS challenges. It runs as a separate internal service, with provider-specific encrypted sessions and receipt archives. The host app keeps responsibility for user authentication, CSRF and private receipt import. Existing single-user installations continue to use the regular containers.

@@ -4,7 +4,7 @@ target-version = "py312"
 # Legacy data and archive modules use their existing formatting:
 extend-exclude = ["discovery", "login", "app/trumf_client.py", "app/rema_client.py", "app/receipt_archive.py",
   "app/provider_archive.py", "app/coop_archive.py", "app/trumf_images.py", "tests/test_provider_archive.py",
-  "tests/test_receipt_archive.py"]
+  "tests/test_receipt_archive.py", "integrations/phocket"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]

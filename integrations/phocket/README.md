@@ -130,3 +130,40 @@ by the account owner. Repeated verification responses without completion stop
 with REMA_VERIFICATION_LOOP; SMS rejection/rate limits and network failures use
 separate fixed codes. Challenge responses and network request bodies are never
 logged or stored. A browser update does not guarantee provider approval.
+## Eksport og sletting av egen profil
+
+Phocket bruker de profilautoriserte endepunktene `GET /v1/profiles/<profile>/export` og `POST /v1/profiles/<profile>/purge`. Eksport inneholder bare profilens kvitteringsfiler fra Coop, Rema og Trumf; kryptert tokenlager, tjenestenøkler og andre profiler er utelatt. Sletting stanser nye hentinger, avbryter innlogging og venter på aktiv innhenting før egne kvitteringsfiler, tokens, profilopplysninger og innloggingsforsøk fjernes. Delvis fullført sletting kan trygt gjentas.
+
+`purge` krever en ny `generation` med 48 heksadesimale tegn for hver ny slettebestilling. En minimal markør i hver innhenters `erasures/`-katalog hindrer forsinkede, gamle innloggingsforespørsler i å gjenopprette et slettet arkiv. En uttrykkelig ny innlogging etter fullført sletting sender tilsvarende `privacy_generation`; forsinkede gjentakelser av den gamle slettingen berører ikke dette nye arkivet. Behold de gjeldende markørene når sikkerhetskopier gjenopprettes. Disse reglene gjelder den separate AGPL-3.0-innhenteren; full kildekode og testene følger fortsatt nedlastingen fra Phocket.
+
+
+
+## Direct browser test (Rema)
+
+The host may opt selected users into a direct Rema browser test. Start via
+POST /v1/profiles/<profile>/providers/rema/browser-start with username (phone) and
+privacy_generation. The result contains an attempt ID and authorization_url.
+The host opens this URL in a new tab in the account owner's browser. No Chromium
+process is launched on the collector for this flow.
+
+Rema's current app callback is ae-appen.appspot.com/redirect/redirect.html and
+its page attempts a bella://authorize app link. It accepts alphanumeric OAuth
+state only, so this test uses 64 random hex characters. No Phocket callback URI
+is substituted for the existing Rema app redirect. Automatic return to a host
+callback requires an allowed redirect/client integration with Rema.
+
+After login the owner pastes the full HTTPS callback URL into the signed-in host.
+The host forwards it in a POST body to providers/rema/browser-complete with the
+pending attempt ID. The collector checks the exact origin/path, unique code and
+state, ownership, expiry and cancellation, then consumes the attempt before
+exchanging the code at the fixed Rema token endpoint with its private PKCE
+verifier. Pasted URLs are parsed only, never fetched. Tokens are bound, encrypted
+and collected using the existing per-profile account and privacy guards.
+
+State, verifier and phone remain in memory for at most 15 minutes; cancellation,
+erasure, restart or completion invalidates the pending browser flow. The host
+must scope completion to its authenticated user/workspace and protect both POSTs
+with CSRF. The reference Phocket adapter enables the UI only for server-configured
+GROCIOUS_REMA_BROWSER_TEST_USERS (comma-separated internal user IDs), disabled by
+default. Return URLs must not be logged or stored; the test sends them only in
+POST bodies, clears the form and does not use clipboard/history/localStorage APIs.

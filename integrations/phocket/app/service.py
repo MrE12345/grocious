@@ -10,6 +10,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import tarfile
@@ -17,11 +18,13 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, request, send_file
 import coop_login
+from browser_login import BrowserAttempt
 import provider_login
 import vault
 
@@ -39,7 +42,7 @@ class Collector:
         self.label = {"coop":"Coop", "rema":"Rema", "trumf":"Trumf"}[provider]
         self.root=Path(root); self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         self.database=self.root/'profiles.sqlite3'; self.guard=threading.RLock()
-        self.codes={}; self.verifications={}; self.active_sync=set(); self.executor=ThreadPoolExecutor(max_workers=2)
+        self.codes={}; self.verifications={}; self.browser_attempts={}; self.active_sync=set(); self.executor=ThreadPoolExecutor(max_workers=2)
         self.sync_executor=ThreadPoolExecutor(max_workers=2)
         self.login_runner=coop_login.authenticate if provider=="coop" else getattr(provider_login,provider)
         with self.db() as conn:
@@ -53,10 +56,19 @@ class Collector:
             ''')
             if not any(r[1]=='bound_hash' for r in conn.execute('PRAGMA table_info(profiles)')):
                 conn.execute('ALTER TABLE profiles ADD COLUMN bound_hash TEXT')
+            if not any(r[1]=='privacy_generation' for r in conn.execute('PRAGMA table_info(profiles)')):
+                conn.execute('ALTER TABLE profiles ADD COLUMN privacy_generation TEXT')
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS profile_account_binding ON profiles(bound_hash)')
             conn.execute("UPDATE attempts SET state='failed',message='Tjenesten startet på nytt. Start innloggingen på nytt.' WHERE state IN ('starting','awaiting_sms','checking_sms','finishing')")
             conn.execute("UPDATE profiles SET sync_state='idle' WHERE sync_state='running'")
         os.chmod(self.database,0o600)
+        # A restored database/token folder must not silently revive an erased account.
+        for marker in (self.root/'erasures').glob('*.json'):
+            generation=json.loads(marker.read_text())['generation'];profile=marker.stem
+            with self.db() as conn:
+                row=conn.execute('SELECT privacy_generation FROM profiles WHERE id=?',(profile,)).fetchone()
+            if (row and row[0]!=generation) or (not row and self.folder(profile).exists()):
+                self.purge(profile,generation)
 
     def db(self):
         conn=sqlite3.connect(self.database,timeout=10); conn.row_factory=sqlite3.Row
@@ -66,7 +78,15 @@ class Collector:
         if not re.fullmatch('[a-f0-9]{64}',profile): raise ServiceError('Ugyldig brukerprofil.',404)
         return self.root/'profiles'/profile
 
+    def _expire_browser(self):
+        with self.guard,self.db() as conn:
+            for attempt,value in list(self.browser_attempts.items()):
+                if value.expires<time.time():
+                    self.browser_attempts.pop(attempt,None)
+                    conn.execute("UPDATE attempts SET state='failed',message='Rema-forsøket utløp. Start et nytt forsøk.' WHERE id=? AND state IN ('starting','finishing')",(attempt,))
+
     def status(self, profile):
+        self._expire_browser()
         with self.db() as conn:
             row=conn.execute('SELECT * FROM profiles WHERE id=?',(profile,)).fetchone()
             attempt=conn.execute('SELECT id,state,message,expires,submissions FROM attempts WHERE profile=? ORDER BY created DESC LIMIT 1',(profile,)).fetchone()
@@ -75,15 +95,23 @@ class Collector:
             with self.guard:
                 challenge=self.verifications.get(login['id']) if login['state'] in ACTIVE and login['expires']>time.time() else None
                 login['verification']={k:challenge[k] for k in ['view_id','width','height']} if challenge else None
+                login['browser']=login['id'] in self.browser_attempts and login['state'] in ACTIVE and login['expires']>time.time()
         return {'connected':bool(row and row['enabled'] and (self.folder(profile)/'vault.enc').exists()),
                 'account_fingerprint':row['account'] if row else None,
                 'login':login,
                 'sync':{'state':row['sync_state'],'message':row['sync_error'],'last_success':row['last_sync']} if row else {'state':'idle','message':'','last_success':None}}
 
-    def start(self, profile, username, password):
+    def start(self, profile, username, password, privacy_generation=None, *, browser=False):
+        self._expire_browser()
+        direct=BrowserAttempt(username) if browser and self.provider=='rema' else None
+        if browser and not direct:raise ServiceError('Nettlesertesten støtter bare Rema.',400)
         if not isinstance(username,str) or not 1<=len(username.strip())<=254 or not isinstance(password,str) or not (0 if self.provider=='rema' else 1)<=len(password)<=1024:
             raise ServiceError('Fyll inn mobilnummer' + ('.' if self.provider=='rema' else ' og passord.'),400)
         with self.guard, self.db() as conn:
+            marker=self.root/'erasures'/(profile+'.json')
+            self.folder(profile)  # Validate before constructing or reading any profile path.
+            if marker.exists() and json.loads(marker.read_text())['generation'] != privacy_generation:
+                raise ServiceError('Kvitteringsarkivet er slettet. Oppdater Phocket før du kobler til på nytt.')
             count=conn.execute("SELECT count(*) FROM attempts WHERE state IN ('starting','awaiting_sms','checking_sms','finishing')").fetchone()[0]
             if count>=2: raise ServiceError('To innlogginger pågår. Prøv igjen om litt.',429)
             recent=conn.execute('SELECT count(*) FROM attempts WHERE profile=? AND created>?',(profile,time.time()-600)).fetchone()[0]
@@ -92,12 +120,35 @@ class Collector:
                 raise ServiceError('En innlogging pågår allerede. Fullfør eller avbryt den først.')
             if profile in self.active_sync: raise ServiceError('Kvitteringer hentes nå. Prøv innloggingen igjen når hentingen er ferdig.')
             conn.execute('INSERT OR IGNORE INTO profiles(id,device) VALUES(?,?)',(profile,str(uuid.uuid4())))
+            conn.execute('UPDATE profiles SET privacy_generation=? WHERE id=?',(privacy_generation,profile))
             attempt=secrets.token_hex(24); now=time.time()
             conn.execute('INSERT INTO attempts(id,profile,state,message,created,expires) VALUES(?,?,?,?,?,?)',
-                         (attempt,profile,'starting','Åpner '+self.label+'-innloggingen.',now,now+420))
-            conn.commit(); self.codes[attempt]=queue.Queue(maxsize=1)
-            self.executor.submit(self._login,profile,attempt,username.strip(),password)
+                         (attempt,profile,'starting','Fullfør innloggingen i Rema-fanen og lim inn returadressen her.' if direct else 'Åpner '+self.label+'-innloggingen.',now,direct.expires if direct else now+420))
+            conn.commit()
+            if direct:self.browser_attempts[attempt]=direct
+            else:
+                self.codes[attempt]=queue.Queue(maxsize=1)
+                self.executor.submit(self._login,profile,attempt,username.strip(),password)
         return attempt
+
+    def start_browser(self, profile, phone, generation=None):
+        attempt=self.start(profile,phone,'',generation,browser=True)
+        with self.guard:return {'attempt':attempt,'authorization_url':self.browser_attempts[attempt].authorization_url()}
+
+    def complete_browser(self, profile, attempt, return_url):
+        self._expire_browser()
+        with self.guard,self.db() as conn:
+            row=self._attempt(profile,attempt)
+            pending=self.browser_attempts.get(attempt)
+            if row['state']!='starting' or row['expires']<time.time() or not pending:
+                raise ServiceError('Rema-forsøket er brukt, avbrutt eller utløpt. Start et nytt forsøk.')
+            try:code=pending.code_from_return(return_url)
+            except coop_login.LoginError as exc:raise ServiceError(str(exc),400) from None
+            self.browser_attempts.pop(attempt)
+            conn.execute("UPDATE attempts SET state='finishing',message='Bekrefter innloggingen hos Rema.' WHERE id=?",(attempt,))
+        return_url=None
+        # Reuse the existing binding, encryption, erasure and receipt scheduling guards.
+        self._login(profile,attempt,None,None,tokens_runner=lambda:pending.exchange(code))
 
     def reserve(self, profile, bound_hash):
         if not isinstance(bound_hash,str) or not re.fullmatch('[a-f0-9]{64}',bound_hash):raise ServiceError('Ugyldig kontobinding.',400)
@@ -141,7 +192,7 @@ class Collector:
         with self.db() as conn:
             conn.execute("UPDATE attempts SET state=?,message=? WHERE id=? AND state IN ('starting','awaiting_sms','checking_sms','finishing')",(state,message,attempt))
 
-    def _login(self, profile, attempt, username, password):
+    def _login(self, profile, attempt, username, password, *, tokens_runner=None):
         def cancelled():
             row=self._attempt(profile,attempt)
             return row['state'] not in ACTIVE or row['expires']<time.time()
@@ -152,7 +203,7 @@ class Collector:
             return None
         phase='browser_login'
         try:
-            tokens=asyncio.run(self.login_runner(username,password,receive,lambda s,m:self.progress(attempt,s,m),cancelled))
+            tokens=tokens_runner() if tokens_runner else asyncio.run(self.login_runner(username,password,receive,lambda s,m:self.progress(attempt,s,m),cancelled))
             username=password=None
             if cancelled(): return
             phase='account_identity'
@@ -232,6 +283,7 @@ class Collector:
         with self.guard,self.db() as conn:
             for row in conn.execute('SELECT id FROM attempts WHERE profile=?',(profile,)):
                 self.verifications.pop(row['id'],None)
+                self.browser_attempts.pop(row['id'],None)
             conn.execute("UPDATE attempts SET state='cancelled',message='Innloggingen er avbrutt.' WHERE profile=? AND state IN ('starting','awaiting_sms','checking_sms','finishing')",(profile,))
 
     def logout(self, profile):
@@ -240,6 +292,27 @@ class Collector:
             if profile in self.active_sync:raise ServiceError('Henting pågår. Vent til den er ferdig før du logger ut.')
             conn.execute('UPDATE profiles SET enabled=0 WHERE id=?',(profile,))
             (self.folder(profile)/'vault.enc').unlink(missing_ok=True)
+
+    def purge(self, profile, generation):
+        folder=self.folder(profile)
+        if not isinstance(generation,str) or not re.fullmatch('[a-f0-9]{48}',generation):
+            raise ServiceError('Ugyldig sletteforespørsel.',400)
+        with self.guard,self.db() as conn:
+            current=conn.execute('SELECT privacy_generation FROM profiles WHERE id=?',(profile,)).fetchone()
+            if current and current[0]==generation:
+                return  # A fresh, explicit login after this erasure must survive delayed retries.
+            marker=self.root/'erasures'/(profile+'.json')
+            vault.atomic(marker,json.dumps({'generation':generation}).encode())
+            self.cancel(profile)
+            conn.execute('UPDATE profiles SET enabled=0 WHERE id=?',(profile,));conn.commit()
+            attempts=[r[0] for r in conn.execute('SELECT id FROM attempts WHERE profile=?',(profile,))]
+            if profile in self.active_sync or any(attempt in self.codes for attempt in attempts):
+                raise ServiceError('Venter på at innlogging eller kvitteringshenting avsluttes.')
+            if folder.is_symlink():folder.unlink()
+            elif folder.is_dir():shutil.rmtree(folder)
+            for attempt in attempts:self.verifications.pop(attempt,None)
+            conn.execute('DELETE FROM attempts WHERE profile=?',(profile,))
+            conn.execute('DELETE FROM profiles WHERE id=?',(profile,))
 
     def schedule_sync(self, profile):
         with self.guard, self.db() as conn:
@@ -276,6 +349,7 @@ class Collector:
             with self.guard:self.active_sync.discard(profile)
 
     def tick(self):
+        self._expire_browser()
         with self.db() as conn:
             profiles=[r[0] for r in conn.execute('SELECT id FROM profiles WHERE enabled=1 AND account IS NOT NULL AND next_sync<=? LIMIT 10',(time.time(),))]
         for profile in profiles:self.schedule_sync(profile)
@@ -342,7 +416,18 @@ def create_app(collector=None, *, background=False):
     @app.post('/v1/profiles/<profile>/providers/<provider>/login')
     def login(profile,provider="coop"):
         collector=selected(provider)
-        body=request.get_json() or {};return jsonify(attempt=collector.start(profile,body.get('username'),body.get('password'))),202
+        body=request.get_json() or {};return jsonify(attempt=collector.start(profile,body.get('username'),body.get('password'),body.get('privacy_generation'))),202
+    @app.post('/v1/profiles/<profile>/providers/rema/browser-start')
+    def browser_start(profile):
+        body=request.get_json() or {}
+        try:result=selected('rema').start_browser(profile,body.get('username'),body.get('privacy_generation'))
+        except coop_login.LoginError as exc:raise ServiceError(str(exc),400) from None
+        return jsonify(result),202
+    @app.post('/v1/profiles/<profile>/providers/rema/browser-complete')
+    def browser_complete(profile):
+        body=request.get_json() or {}
+        selected('rema').complete_browser(profile,body.get('attempt'),body.get('return_url'))
+        return jsonify(ok=True),202
     @app.post('/v1/profiles/<profile>/reserve')
     @app.post('/v1/profiles/<profile>/providers/<provider>/reserve')
     def reserve(profile,provider="coop"):
@@ -373,6 +458,35 @@ def create_app(collector=None, *, background=False):
     def logout(profile,provider="coop"):
         collector=selected(provider)
         collector.logout(profile);return jsonify(ok=True)
+    @app.post('/v1/profiles/<profile>/purge')
+    def purge(profile):
+        generation=(request.get_json(silent=True) or {}).get('generation')
+        busy=False
+        for instance in collectors.values():
+            try:instance.purge(profile,generation)
+            except ServiceError as exc:
+                if exc.status!=409:raise
+                busy=True
+        if busy:raise ServiceError('Venter på at pågående innlogging eller kvitteringshenting avsluttes.')
+        return jsonify(ok=True)
+    @app.get('/v1/profiles/<profile>/export')
+    def export(profile):
+        export_root=collector.root/'export-tmp';export_root.mkdir(mode=0o700,exist_ok=True)
+        content=tempfile.TemporaryFile(dir=export_root)
+        try:
+            with zipfile.ZipFile(content,'w',zipfile.ZIP_DEFLATED) as archive:
+                for provider,instance in collectors.items():
+                    root=instance.folder(profile)/'receipts'
+                    if root.is_symlink():raise ServiceError('Arkivet kunne ikke eksporteres.',409)
+                    for path in sorted(root.rglob('*')) if root.is_dir() else []:
+                        if path.is_file() and not path.is_symlink() and root.resolve() in path.resolve().parents:
+                            archive.write(path,provider+'/'+str(path.relative_to(root)))
+            content.seek(0)
+            response=send_file(content,mimetype='application/zip',as_attachment=True,download_name='grocious-originaler.zip')
+            response.call_on_close(content.close)
+            return response
+        except Exception:
+            content.close();raise
     @app.post('/v1/profiles/<profile>/sync')
     @app.post('/v1/profiles/<profile>/providers/<provider>/sync')
     def sync(profile,provider="coop"):

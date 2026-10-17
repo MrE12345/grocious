@@ -1,0 +1,15 @@
+# Separate development instance; no production credentials or receipt volume.
+services:
+  web:
+    build: {context: ., dockerfile: Dockerfile.web}
+    image: grocious-multiuser:dev
+    container_name: grocious-multiuser-dev
+    environment:
+      GROCIOUS_MULTIUSER: "1"
+      GROCIOUS_DEMO: "0"
+      GROCIOUS_COOKIE_SECURE: ${GROCIOUS_COOKIE_SECURE:-0}
+      GROCERY_DATA: /data
+      TZ: Europe/Oslo
+    volumes: ["./multiuser-data:/data"]
+    ports: ["127.0.0.1:3014:3012"]
+    restart: unless-stopped

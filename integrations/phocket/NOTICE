@@ -1,0 +1,25 @@
+Grocious multiuser collector, based on Grocious by Pål Hatlem.
+Upstream: https://github.com/palhatlem/grocious
+Local source revision: e869ed97694437eb62413d8678939f7d7ea04804
+Copied modules: coop_archive.py, coop_session.py, receipt_archive.py.
+Licensed under GNU AGPL version 3; see LICENSE.
+
+2026-10-16: added isolated profiles, authenticated profile API, browser login with
+SMS challenges, encrypted token storage and scheduled collection. coop_archive.py
+now checkpoints refreshed tokens to the encrypted vault. The Phocket integration
+communicates over HTTP and contains no Grocious provider implementation.
+Corresponding source is available through the service's /source endpoint.
+
+2026-10-16: added provider_archive.py from Grocious feature/multi-user,
+provider_login.py and provider_session.py for separate Rema/Trumf browser login,
+provider-specific encrypted sessions, receipt backfill and refresh checkpoints.
+The provider archive imports the isolated job's provider_session adapter instead
+of webgui. All three providers share the authenticated HTTP protocol.
+
+2026-10-16: tolerate Coop SMS auto-submit after a validated callback, ignore empty
+error containers, and report credential-free failure stages for troubleshooting.
+
+2026-10-16: added an account-owned, in-memory manual Rema verification relay.
+Only the visible reCAPTCHA frame can be viewed/clicked by its owner; no solver,
+login-page capture, image persistence or new public port is introduced. Added
+runtime time-zone data required by provider receipt normalization.

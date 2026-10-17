@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="nb"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Logg inn · Grocious</title><link rel="stylesheet" href="/themes.css"><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="wrap"><section class="card"><h1>Logg inn på Grocious</h1>
+<p>Dine dagligvarekontoer og kvitteringer er private.</p>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<p><label>Brukernavn <input name="username" autocomplete="username" required maxlength="80"></label></p>
+<p><label>Passord <input type="password" name="password" autocomplete="current-password" required maxlength="1024"></label></p>
+<button class="btn" type="submit">Logg inn</button></form>
+<p class="mut">Kontakt administratoren for å få en brukerkonto.</p></section></main></body></html>

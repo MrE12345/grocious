@@ -218,7 +218,9 @@
   });
 
   var hiddenOffers = [], offerKey = "grocious.hiddenOffers";
-  try { var stored = JSON.parse(localStorage.getItem(offerKey) || "[]"); if (Array.isArray(stored)) hiddenOffers = stored; } catch (e) {}
+  var offerStorage = null;
+  try { if (!document.body.dataset.userId) offerStorage = localStorage; } catch (e) {}
+  try { var stored = JSON.parse(offerStorage && offerStorage.getItem(offerKey) || "[]"); if (Array.isArray(stored)) hiddenOffers = stored; } catch (e) {}
   var offers = Array.prototype.slice.call(document.querySelectorAll("[data-offer-id]"));
   var resetOffers = document.getElementById("offers-reset");
   function showOffers() {
@@ -231,12 +233,12 @@
   offers.forEach(function (card) {
     card.querySelector(".offer-dismiss").addEventListener("click", function () {
       if (hiddenOffers.indexOf(card.dataset.offerId) === -1) hiddenOffers.push(card.dataset.offerId);
-      try { localStorage.setItem(offerKey, JSON.stringify(hiddenOffers)); } catch (e) {}
+      try { offerStorage && offerStorage.setItem(offerKey, JSON.stringify(hiddenOffers)); } catch (e) {}
       showOffers();
     });
   });
   if (resetOffers) resetOffers.addEventListener("click", function () {
-    hiddenOffers = []; try { localStorage.removeItem(offerKey); } catch (e) {} showOffers();
+    hiddenOffers = []; try { offerStorage && offerStorage.removeItem(offerKey); } catch (e) {} showOffers();
   });
   showOffers();
 

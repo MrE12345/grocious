@@ -1,10 +1,9 @@
 """Manual registration markers, independent of receipt originals and exports."""
+import runtime
 import datetime as dt
 import fcntl
 import hashlib
 import json
-import os
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from flask import Blueprint, abort, jsonify, request
@@ -15,7 +14,7 @@ bp = Blueprint('bookkeeping', __name__)
 
 def path(source, rid):
     archive.folder(source, rid)  # validate source and content-addressed ID
-    return Path(os.environ.get('GROCERY_DATA', '/data')) / 'bookkeeping' / source / (rid + '.json')
+    return runtime.data_dir() / 'bookkeeping' / source / (rid + '.json')
 
 
 def fingerprint(record):

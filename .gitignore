@@ -12,3 +12,6 @@ __pycache__/
 
 # Public brand assets only; other screenshots remain ignored.
 !app/static/brand/*.png
+
+# Multi-user runtime contains credentials, users and private archives.
+multiuser-data/

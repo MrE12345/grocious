@@ -4,7 +4,10 @@ Bonus, offers/coupons (with manual activate), receipts + JSON/CSV/PDF export.
 Read-only except opt-in Rema offer activation. Behind tinyauth; binds 127.0.0.1."""
 import json, os, io, csv, re, uuid, datetime, functools
 import requests
-from flask import Flask, Response, render_template, redirect, abort, request, jsonify, send_file
+import accounts
+import runtime
+from werkzeug.local import LocalProxy
+from flask import g, Flask, Response, render_template, redirect, abort, request, jsonify, send_file
 import receipt_archive
 import navigation
 import bookkeeping
@@ -13,18 +16,21 @@ from inbox import store as inbox_store
 from inbox.routes import bp as inbox_bp
 import demo, themes, ui, dashboard_stats, bonus_sources, offers as offer_ui
 
-DATA = os.environ.get("GROCERY_DATA", "/data")
-REMA_PHONE = os.environ.get("REMA_PHONE", "")
+DATA = LocalProxy(lambda: str(runtime.data_dir()))
+REMA_PHONE = LocalProxy(lambda: runtime.setting("REMA_PHONE"))
 DEMO = os.environ.get("GROCIOUS_DEMO", "") not in ("", "0", "false")
 if DEMO and "GROCERY_DATA" not in os.environ:  # demo archive (Coop) lives with the fixtures
     os.environ["GROCERY_DATA"] = str(demo.FIXTURES / "data")
 app = Flask(__name__, template_folder="templates", static_folder="static")
+accounts.install(app)
 app.jinja_env.filters.update(ui.FILTERS)
 app.register_blueprint(navigation.bp)
 app.register_blueprint(bookkeeping.bp)
 
 @app.context_processor
 def navigation_context():
+    if runtime.multiuser() and not g.get("account"):
+        return {"navigation": {"enabled": False, "links": []}, "inbox_pending_count": 0}
     return {"navigation": navigation.load(), "inbox_pending_count": sum(
         row.get("review", {}).get("state") == "needs_review"
         for row in receipt_archive.summary("inbox")["receipts"]
@@ -37,9 +43,10 @@ def _cache(ttl):
         @functools.wraps(fn)
         def wrap(*a):
             now = datetime.datetime.now().timestamp()
-            if a not in box or now - box[a][0] > ttl:
-                box[a] = (now, fn(*a))
-            return box[a][1]
+            key = (str(runtime.data_dir()), a)
+            if key not in box or now - box[key][0] > ttl:
+                box[key] = (now, fn(*a))
+            return box[key][1]
         wrap.clear = box.clear
         return wrap
     return deco
@@ -50,7 +57,7 @@ def _line_cache(chain):
     def deco(fn):
         @functools.wraps(fn)
         def wrap(rid):
-            path = os.path.join(DATA, "cache", f"{chain}-{rid}.json")
+            path = os.path.join(str(DATA), "cache", f"{chain}-{rid}.json")
             try:
                 with open(path, encoding="utf-8") as fh:
                     return json.load(fh)
@@ -143,7 +150,7 @@ def rema_headers():
     if "refresh_token" in r: json.dump(r, open(f"{DATA}/rema_tokens.json", "w"))
     return {"Authorization": "Bearer " + r["access_token"], "ocp-apim-subscription-key": "fb5e24884b504d0bad761098f77e6605",
             "x-platform": "android", "x-correlation-id": str(uuid.uuid4()), "x-device-id": str(uuid.uuid4()),
-            "x-mobile-nr": REMA_PHONE, "x-app": "bella", "x-app-version": "3.0.12 #110549", "Accept": "application/json"}
+            "x-mobile-nr": str(REMA_PHONE), "x-app": "bella", "x-app-version": "3.0.12 #110549", "Accept": "application/json"}
 
 @_cache(300)
 def rema_data():

@@ -2,12 +2,12 @@
 
 import hashlib
 import json
-import os
 import time
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
+
+from coop_session import load_headers
 
 
 def url(value):
@@ -73,9 +73,7 @@ def cards(source, rows):
 
 def coop_data():
     try:
-        headers = json.loads((Path(os.environ.get("GROCERY_DATA", "/data")) / "coop_session.json").read_text())[
-            "headers"
-        ]
+        headers = load_headers()
         response = requests.get("https://cdcapp.coop.no/coupon/all", headers=headers, timeout=20)
         response.raise_for_status()
         raw = response.json()

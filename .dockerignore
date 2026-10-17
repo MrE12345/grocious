@@ -9,3 +9,7 @@
 **/*tokens*.json
 **/*state*.json
 *.log
+
+**/multiuser-data
+**/auth/accounts.sqlite3*
+**/auth/session.key

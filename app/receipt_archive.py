@@ -1,4 +1,5 @@
 """Additive, private receipt archive. Originals are immutable and content-addressed."""
+import runtime
 import csv, datetime as dt, hashlib, io, json, os, re, tempfile
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 SOURCES = {'coop', 'rema', 'trumf', 'inbox'}
 
 def root():
-    return Path(os.environ.get('GROCERY_DATA', '/data')) / 'receipts'
+    return runtime.data_dir() / 'receipts'
 
 def atomic_json(path, value):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)

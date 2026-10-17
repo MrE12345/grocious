@@ -105,9 +105,13 @@ include a fixed stage code (for example `COOP_SMS_SUBMIT_TIMEOUT` or
 
 ## Manual Rema security verification
 
+These collector endpoints remain available for legacy server-browser integrations.
+The Phocket adapter uses direct browser login below and no longer displays these
+security-frame controls.
+
 Rema can show a reCAPTCHA image challenge before it sends an SMS. The collector
 relays only that visible, trusted CAPTCHA iframe as a PNG held in memory. The
-account owner clicks the image in Phocket; no automated solver is used. The
+account owner clicks the image in the host; no automated solver is used. The
 collector accepts clicks only inside the current frame, from the profile and
 attempt that owns it. Geometry changes invalidate old input, click queues are
 bounded/rate limited, and cancellation/expiry removes the image. Credentials,
@@ -138,9 +142,10 @@ Phocket bruker de profilautoriserte endepunktene `GET /v1/profiles/<profile>/exp
 
 
 
-## Direct browser test (Rema)
+## Direct browser login (Rema)
 
-The host may opt selected users into a direct Rema browser test. Start via
+The reference Phocket adapter uses direct Rema browser login by default for all
+authenticated users with receipt write access. Start via
 POST /v1/profiles/<profile>/providers/rema/browser-start with username (phone) and
 privacy_generation. The result contains an attempt ID and authorization_url.
 The host opens this URL in a new tab in the account owner's browser. No Chromium
@@ -148,7 +153,7 @@ process is launched on the collector for this flow.
 
 Rema's current app callback is ae-appen.appspot.com/redirect/redirect.html and
 its page attempts a bella://authorize app link. It accepts alphanumeric OAuth
-state only, so this test uses 64 random hex characters. No Phocket callback URI
+state only, so this flow uses 64 random hex characters. No Phocket callback URI
 is substituted for the existing Rema app redirect. Automatic return to a host
 callback requires an allowed redirect/client integration with Rema.
 
@@ -163,7 +168,6 @@ and collected using the existing per-profile account and privacy guards.
 State, verifier and phone remain in memory for at most 15 minutes; cancellation,
 erasure, restart or completion invalidates the pending browser flow. The host
 must scope completion to its authenticated user/workspace and protect both POSTs
-with CSRF. The reference Phocket adapter enables the UI only for server-configured
-GROCIOUS_REMA_BROWSER_TEST_USERS (comma-separated internal user IDs), disabled by
-default. Return URLs must not be logged or stored; the test sends them only in
+with CSRF. The Phocket adapter applies its existing membership, module, privacy and CSRF
+guards to every user. Return URLs must not be logged or stored; the flow sends them only in
 POST bodies, clears the form and does not use clipboard/history/localStorage APIs.
